@@ -4,6 +4,7 @@ from google.genai import types
 import pandas as pd
 import json
 import time
+import pypdf  # <--- เพิ่มไลบรารีสำหรับอ่าน PDF
 
 # 1. ตั้งค่าหน้าเว็บ (ต้องอยู่บรรทัดแรกสุดเสมอ)
 st.set_page_config(page_title="Research Project SROI Evaluator", layout="wide")
@@ -27,7 +28,8 @@ if st.button("เริ่มประมวลผลโครงการ") and
     progress_bar = st.progress(0)
     status_text = st.empty()
 
-    prompt = """
+    # เปลี่ยนตัวเลขตัวอย่างเป็น 0 ทั้งหมดเพื่อไม่ให้ AI สับสน
+    base_prompt = """
     คุณคือผู้เชี่ยวชาญด้านการประเมินโครงการวิจัยและผู้เชี่ยวชาญด้าน SROI กรุณาอ่านเอกสารโครงการที่แนบมา และสกัดข้อมูลออกมาในรูปแบบ JSON เท่านั้น โครงสร้างตามนี้:
     {
         "project_name": "ชื่อโครงการวิจัย",
@@ -42,12 +44,12 @@ if st.button("เริ่มประมวลผลโครงการ") and
         "impact": "ผลกระทบ (Impact) เชิงนโยบาย เศรษฐกิจ หรือสิ่งแวดล้อมในวงกว้าง",
         "primary_sdg": "SDG หลักที่เกี่ยวข้องโดยตรงที่สุด (เช่น SDG 9)",
         "secondary_sdg": "SDG ย่อยที่สนับสนุน (เช่น SDG 13)",
-        "total_investment": 100000, 
-        "beneficiary_count": 50,
-        "financial_proxy_value": 3000,
+        "total_investment": 0, 
+        "beneficiary_count": 0,
+        "financial_proxy_value": 0,
         "financial_proxy_explanation": "คำอธิบายที่มาของการแทนค่าทางการเงิน (Financial Proxy) ว่าอ้างอิงจากอะไรหรือคิดอย่างไรสำหรับการตีมูลค่าผลลัพธ์นี้เป็นเงิน",
-        "deadweight_pct": 10,
-        "attribution_pct": 20
+        "deadweight_pct": 0,
+        "attribution_pct": 0
     }
     หมายเหตุ:
     - สำหรับค่า total_investment, beneficiary_count, financial_proxy_value, deadweight_pct, attribution_pct ให้หาข้อมูลจากในเล่ม หากไม่พบจริงๆ ให้คุณทำการประมาณการ (Estimate) ตัวเลขที่เหมาะสมตามหลักการประเมิน SROI และคืนค่ากลับมาเป็นตัวเลข (Number) ห้ามใส่ข้อความหรือเครื่องหมายจุลภาคในฟิลด์ตัวเลขเหล่านี้
@@ -58,15 +60,23 @@ if st.button("เริ่มประมวลผลโครงการ") and
         status_text.text(f"กำลังประมวลผลโครงการที่ {i+1}/{len(uploaded_files)}: {file.name}")
         
         try:
-            pdf_bytes = file.read()
+            # ---------------------------------------------------------
+            # ส่วนที่เพิ่มเข้ามาใหม่: อ่านข้อความจาก PDF ด้วย pypdf
+            # ---------------------------------------------------------
+            pdf_reader = pypdf.PdfReader(file)
+            extracted_text = ""
+            for page in pdf_reader.pages:
+                text = page.extract_text()
+                if text:
+                    extracted_text += text + "\n"
             
-            # ใช้โมเดล gemini-2.0-flash
+            # นำข้อความที่สกัดได้ มาต่อท้าย Prompt ของเรา
+            full_prompt = f"{base_prompt}\n\nเนื้อหาเอกสารโครงการวิจัย:\n{extracted_text}"
+
+            # ส่งให้ Gemini 2.0 Flash (ส่งเป็น Text ปกติ ไม่ได้ส่งไฟล์)
             response = client.models.generate_content(
                 model='gemini-2.0-flash',
-                contents=[
-                    types.Part.from_bytes(data=pdf_bytes, mime_type='application/pdf'),
-                    prompt
-                ],
+                contents=full_prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     temperature=0.2
@@ -74,6 +84,7 @@ if st.button("เริ่มประมวลผลโครงการ") and
             )
             
             data = json.loads(response.text)
+            # ---------------------------------------------------------
             
             # คำนวณ SROI
             investment = float(data.get("total_investment", 0))
