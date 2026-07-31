@@ -67,7 +67,7 @@ if st.button("เริ่มประมวลผลโครงการ") and
             extracted_text = ""
             
             # ตั้งค่าให้อ่านแค่ 15 หน้าแรก 
-            MAX_PAGES = 15 
+            MAX_PAGES = 50
             
             for page_num, page in enumerate(pdf_reader.pages):
                 if page_num >= MAX_PAGES:
@@ -83,7 +83,7 @@ if st.button("เริ่มประมวลผลโครงการ") and
 
             # ส่งให้ Gemini 2.0 Flash
             response = client.models.generate_content(
-                model='gemini-2.0-flash',
+                model='gemini-3.6-flash',
                 contents=full_prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
