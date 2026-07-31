@@ -3,11 +3,16 @@ from google import genai
 from google.genai import types
 import pandas as pd
 import json
+import time
 
 # 1. ตั้งค่าหน้าเว็บ (ต้องอยู่บรรทัดแรกสุดเสมอ)
 st.set_page_config(page_title="Research Project SROI Evaluator", layout="wide")
 st.title("ระบบสกัดข้อมูลโครงการวิจัยและประเมินผลตอบแทนทางสังคม (SROI)")
 st.markdown("อัปโหลดไฟล์เอกสารโครงการวิจัยเพื่อวิเคราะห์ข้อมูลเชิงยุทธศาสตร์ SDGs และคำนวณ SROI เบื้องต้น")
+
+# [ตั้งค่า session_state เพื่อป้องกันข้อมูลหายตอนกดดาวน์โหลด]
+if 'df_thai' not in st.session_state:
+    st.session_state.df_thai = None
 
 # 2. รับค่า API Key
 api_key = st.text_input("กรุณาใส่ Gemini API Key ของคุณ", type="password")
@@ -55,8 +60,9 @@ if st.button("เริ่มประมวลผลโครงการ") and
         try:
             pdf_bytes = file.read()
             
+            # ใช้โมเดล gemini-2.0-flash
             response = client.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-2.0-flash',
                 contents=[
                     types.Part.from_bytes(data=pdf_bytes, mime_type='application/pdf'),
                     prompt
@@ -90,6 +96,11 @@ if st.button("เริ่มประมวลผลโครงการ") and
             st.error(f"เกิดข้อผิดพลาดกับไฟล์ {file.name}: {e}")
             
         progress_bar.progress((i + 1) / len(uploaded_files))
+        
+        # หน่วงเวลา 20 วินาทีเพื่อป้องกัน API Limit (เว้นไฟล์สุดท้ายไม่ต้องหน่วง)
+        if i < len(uploaded_files) - 1:
+            status_text.text(f"พักระบบ 20 วินาทีก่อนประมวลผลไฟล์ถัดไป เพื่อป้องกันข้อจำกัด API...")
+            time.sleep(20)
 
     status_text.text("ประมวลผลและคำนวณ SROI เสร็จสิ้น!")
 
@@ -123,13 +134,18 @@ if st.button("เริ่มประมวลผลโครงการ") and
             "financial_proxy_explanation": "ที่มาและคำอธิบาย SROI"
         })
         
-        st.subheader("📊 ตารางสรุปข้อมูลโครงการวิจัยและการประเมิน SROI")
-        st.dataframe(df_thai)
+        # บันทึกตารางลงตัวแปร state เพื่อไม่ให้ข้อมูลหาย
+        st.session_state.df_thai = df_thai
 
-        csv = df_thai.to_csv(index=False).encode('utf-8-sig') 
-        st.download_button(
-            label="📥 ดาวน์โหลดรายงานโครงการวิจัยและ SROI (.CSV)",
-            data=csv,
-            file_name="สรุปโครงการวิจัยและคำนวณ_SROI.csv",
-            mime="text/csv",
-        )
+# 4. แสดงผลตารางและปุ่มดาวน์โหลด (นำออกมาไว้นอกเงื่อนไขปุ่มรัน)
+if st.session_state.df_thai is not None:
+    st.subheader("📊 ตารางสรุปข้อมูลโครงการวิจัยและการประเมิน SROI")
+    st.dataframe(st.session_state.df_thai)
+
+    csv = st.session_state.df_thai.to_csv(index=False).encode('utf-8-sig') 
+    st.download_button(
+        label="📥 ดาวน์โหลดรายงานโครงการวิจัยและ SROI (.CSV)",
+        data=csv,
+        file_name="สรุปโครงการวิจัยและคำนวณ_SROI.csv",
+        mime="text/csv",
+    )
