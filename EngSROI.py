@@ -96,7 +96,7 @@ if st.button("เริ่มประมวลผลโครงการ") and
         full_prompt = f"{base_prompt}\n\nเนื้อหาเอกสารโครงการวิจัยทั้งหมดที่เกี่ยวข้อง:\n{combined_text}"
 
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.6-flash',
             contents=full_prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
