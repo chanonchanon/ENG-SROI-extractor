@@ -3,13 +3,12 @@ from google import genai
 from google.genai import types
 import pandas as pd
 import json
-import time
 import pypdf
 
 # 1. ตั้งค่าหน้าเว็บ (ต้องอยู่บรรทัดแรกสุดเสมอ)
 st.set_page_config(page_title="Research Project SROI Evaluator", layout="wide")
 st.title("ระบบสกัดข้อมูลโครงการวิจัยและประเมินผลตอบแทนทางสังคม (SROI)")
-st.markdown("อัปโหลดไฟล์เอกสารโครงการวิจัยเพื่อวิเคราะห์ข้อมูลเชิงยุทธศาสตร์ SDGs และคำนวณ SROI เบื้องต้น")
+st.markdown("อัปโหลดไฟล์เอกสารโครงการวิจัย (รองรับการอัปโหลดหลายไฟล์สำหรับ 1 โครงการ) เพื่อวิเคราะห์ข้อมูลเชิงยุทธศาสตร์ SDGs และคำนวณ SROI")
 
 # [ตั้งค่า session_state เพื่อป้องกันข้อมูลหายตอนกดดาวน์โหลด]
 if 'df_thai' not in st.session_state:
@@ -18,19 +17,24 @@ if 'df_thai' not in st.session_state:
 # 2. รับค่า API Key
 api_key = st.text_input("กรุณาใส่ Gemini API Key ของคุณ", type="password")
 
-# 3. ส่วนอัปโหลดไฟล์
-uploaded_files = st.file_uploader("เลือกไฟล์เอกสารโครงการวิจัย (PDF)", type="pdf", accept_multiple_files=True)
+# 3. ส่วนอัปโหลดไฟล์ (กรณี 1 โครงการมีหลายไฟล์ เช่น เล่มข้อเสนอโครงการ + งบประมาณ + รายงานสรุป)
+uploaded_files = st.file_uploader(
+    "เลือกไฟล์เอกสารโครงการวิจัย (PDF) - สามารถเลือกหลายไฟล์ที่เป็นของโครงการเดียวกันได้", 
+    type="pdf", 
+    accept_multiple_files=True
+)
 
 if st.button("เริ่มประมวลผลโครงการ") and uploaded_files and api_key:
     client = genai.Client(api_key=api_key) 
     
-    results = []
-    progress_bar = st.progress(0)
     status_text = st.empty()
+    progress_bar = st.progress(0)
 
     # Base Prompt
     base_prompt = """
-    คุณคือผู้เชี่ยวชาญด้านการประเมินโครงการวิจัยและผู้เชี่ยวชาญด้าน SROI กรุณาอ่านเอกสารโครงการที่แนบมา และสกัดข้อมูลออกมาในรูปแบบ JSON เท่านั้น โครงสร้างตามนี้:
+    คุณคือผู้เชี่ยวชาญด้านการประเมินโครงการวิจัยและผู้เชี่ยวชาญด้าน SROI 
+    กรุณาอ่านเอกสารโครงการวิจัยทั้งหมดที่แนบมา ซึ่งทั้งหมดนี้คือเอกสารของ "โครงการวิจัยเดียวกัน" 
+    แล้วทำการวิเคราะห์/สังเคราะห์สกัดข้อมูลออกมาเป็นชุดเดียวในรูปแบบ JSON เท่านั้น โครงสร้างตามนี้:
     {
         "project_name": "ชื่อโครงการวิจัย",
         "project_leader": "ชื่อหัวหน้าโครงการ",
@@ -52,78 +56,76 @@ if st.button("เริ่มประมวลผลโครงการ") and
         "attribution_pct": 0
     }
     หมายเหตุ:
-    - สำหรับค่า total_investment, beneficiary_count, financial_proxy_value, deadweight_pct, attribution_pct ให้หาข้อมูลจากในเล่ม หากไม่พบจริงๆ ให้คุณทำการประมาณการ (Estimate) ตัวเลขที่เหมาะสมตามหลักการประเมิน SROI และคืนค่ากลับมาเป็นตัวเลข (Number) ห้ามใส่ข้อความหรือเครื่องหมายจุลภาคในฟิลด์ตัวเลขเหล่านี้
+    - สำหรับค่า total_investment, beneficiary_count, financial_proxy_value, deadweight_pct, attribution_pct ให้หาข้อมูลรวบรวมจากเอกสารทุกชุด หากไม่พบจริงๆ ให้คุณทำการประมาณการ (Estimate) ตัวเลขที่เหมาะสมตามหลักการประเมิน SROI และคืนค่ากลับมาเป็นตัวเลข (Number) ห้ามใส่ข้อความหรือเครื่องหมายจุลภาคในฟิลด์ตัวเลขเหล่านี้
     - ฟิลด์อธิบายทั้งหมดต้องเขียนเป็นภาษาไทย
     """
 
-    for i, file in enumerate(uploaded_files):
-        status_text.text(f"กำลังประมวลผลโครงการที่ {i+1}/{len(uploaded_files)}: {file.name}")
-        
-        try:
-            # ---------------------------------------------------------
-            # อ่านข้อความจาก PDF โดยจำกัดจำนวนหน้าเพื่อป้องกัน Token เกิน
-            # ---------------------------------------------------------
+    try:
+        combined_text = ""
+        file_names = []
+        MAX_PAGES_PER_FILE = 50
+
+        # ---------------------------------------------------------
+        # อ่านข้อความจากทุก PDF และนำมารวมกันเป็นชุดเดียว
+        # ---------------------------------------------------------
+        for idx, file in enumerate(uploaded_files):
+            file_names.append(file.name)
+            status_text.text(f"กำลังอ่านเนื้อหาจากไฟล์ ({idx+1}/{len(uploaded_files)}): {file.name}")
+            
             pdf_reader = pypdf.PdfReader(file)
             extracted_text = ""
             
-            # ตั้งค่าให้อ่านแค่ 15 หน้าแรก 
-            MAX_PAGES = 50
-            
             for page_num, page in enumerate(pdf_reader.pages):
-                if page_num >= MAX_PAGES:
+                if page_num >= MAX_PAGES_PER_FILE:
                     break 
-                
                 text = page.extract_text()
                 if text:
                     extracted_text += text + "\n"
-            # ---------------------------------------------------------
             
-            # นำข้อความที่สกัดได้ มาต่อท้าย Prompt
-            full_prompt = f"{base_prompt}\n\nเนื้อหาเอกสารโครงการวิจัย (แสดงเพียง {MAX_PAGES} หน้าแรก):\n{extracted_text}"
+            combined_text += f"\n--- เริ่มต้นเนื้อหาจากไฟล์: {file.name} ---\n"
+            combined_text += extracted_text
+            combined_text += f"\n--- สิ้นสุดเนื้อหาจากไฟล์: {file.name} ---\n"
+            
+            progress_bar.progress((idx + 1) / (len(uploaded_files) + 1))
 
-            # ส่งให้ Gemini 2.0 Flash
-            response = client.models.generate_content(
-                model='gemini-3.6-flash',
-                contents=full_prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.2
-                )
-            )
-            
-            data = json.loads(response.text)
-            
-            # คำนวณ SROI
-            investment = float(data.get("total_investment", 0))
-            count = float(data.get("beneficiary_count", 0))
-            proxy = float(data.get("financial_proxy_value", 0))
-            deadweight = float(data.get("deadweight_pct", 0)) / 100.0
-            attribution = float(data.get("attribution_pct", 0)) / 100.0
-            
-            gross_value = count * proxy
-            net_impact_value = gross_value * (1 - deadweight) * (1 - attribution)
-            sroi_ratio = net_impact_value / investment if investment > 0 else 0
-            
-            data["net_impact_value"] = round(net_impact_value, 2)
-            data["sroi_ratio"] = round(sroi_ratio, 2)
-            data["file_name"] = file.name 
-            
-            results.append(data)
-            
-        except Exception as e:
-            st.error(f"เกิดข้อผิดพลาดกับไฟล์ {file.name}: {e}")
-            
-        progress_bar.progress((i + 1) / len(uploaded_files))
+        # ---------------------------------------------------------
+        # รวม Prompt ทั้งหมดแล้วส่ง Gemini ประมวลผลเพียงครั้งเดียว
+        # ---------------------------------------------------------
+        status_text.text("กำลังประมวลผลวิเคราะห์โครงการวิจัยและคำนวณ SROI รวมด้วย Gemini...")
         
-        # หน่วงเวลา 60 วินาทีเพื่อเคลียร์โควตา API รายนาที (เว้นไฟล์สุดท้ายไม่ต้องหน่วง)
-        if i < len(uploaded_files) - 1:
-            status_text.text(f"พักระบบ 60 วินาทีก่อนประมวลผลไฟล์ถัดไป เพื่อรีเซ็ตโควตา API...")
-            time.sleep(60)
+        full_prompt = f"{base_prompt}\n\nเนื้อหาเอกสารโครงการวิจัยทั้งหมดที่เกี่ยวข้อง:\n{combined_text}"
 
-    status_text.text("ประมวลผลและคำนวณ SROI เสร็จสิ้น!")
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=full_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.2
+            )
+        )
+        
+        data = json.loads(response.text)
+        
+        # คำนวณ SROI
+        investment = float(data.get("total_investment", 0))
+        count = float(data.get("beneficiary_count", 0))
+        proxy = float(data.get("financial_proxy_value", 0))
+        deadweight = float(data.get("deadweight_pct", 0)) / 100.0
+        attribution = float(data.get("attribution_pct", 0)) / 100.0
+        
+        gross_value = count * proxy
+        net_impact_value = gross_value * (1 - deadweight) * (1 - attribution)
+        sroi_ratio = net_impact_value / investment if investment > 0 else 0
+        
+        data["net_impact_value"] = round(net_impact_value, 2)
+        data["sroi_ratio"] = round(sroi_ratio, 2)
+        data["file_name"] = ", ".join(file_names)  # บันทึกรายชื่อไฟล์ทั้งหมดที่ใช้วิเคราะห์
 
-    if results:
-        df = pd.DataFrame(results)
+        progress_bar.progress(1.0)
+        status_text.text("ประมวลผลและคำนวณ SROI เสร็จสิ้น!")
+
+        # จัดทำ DataFrame
+        df = pd.DataFrame([data])
         
         cols = [
             "file_name", "project_name", "project_leader", "co_researchers", "summary", 
@@ -133,7 +135,7 @@ if st.button("เริ่มประมวลผลโครงการ") and
         df = df.reindex(columns=cols)
         
         df_thai = df.rename(columns={
-            "file_name": "ชื่อไฟล์",
+            "file_name": "ไฟล์เอกสารที่ใช้",
             "project_name": "ชื่อโครงการ",
             "project_leader": "หัวหน้าโครงการ",
             "co_researchers": "ผู้ร่วมวิจัย",
@@ -152,10 +154,12 @@ if st.button("เริ่มประมวลผลโครงการ") and
             "financial_proxy_explanation": "ที่มาและคำอธิบาย SROI"
         })
         
-        # บันทึกตารางลงตัวแปร state เพื่อไม่ให้ข้อมูลหาย
         st.session_state.df_thai = df_thai
 
-# 4. แสดงผลตารางและปุ่มดาวน์โหลด (นำออกมาไว้นอกเงื่อนไขปุ่มรัน)
+    except Exception as e:
+        st.error(f"เกิดข้อผิดพลาดในการประมวลผล: {e}")
+
+# 4. แสดงผลตารางและปุ่มดาวน์โหลด
 if st.session_state.df_thai is not None:
     st.subheader("📊 ตารางสรุปข้อมูลโครงการวิจัยและการประเมิน SROI")
     st.dataframe(st.session_state.df_thai)
