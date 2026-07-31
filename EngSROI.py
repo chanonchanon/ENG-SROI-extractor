@@ -4,7 +4,7 @@ from google.genai import types
 import pandas as pd
 import json
 import time
-import pypdf  # <--- เพิ่มไลบรารีสำหรับอ่าน PDF
+import pypdf
 
 # 1. ตั้งค่าหน้าเว็บ (ต้องอยู่บรรทัดแรกสุดเสมอ)
 st.set_page_config(page_title="Research Project SROI Evaluator", layout="wide")
@@ -28,7 +28,7 @@ if st.button("เริ่มประมวลผลโครงการ") and
     progress_bar = st.progress(0)
     status_text = st.empty()
 
-    # เปลี่ยนตัวเลขตัวอย่างเป็น 0 ทั้งหมดเพื่อไม่ให้ AI สับสน
+    # Base Prompt
     base_prompt = """
     คุณคือผู้เชี่ยวชาญด้านการประเมินโครงการวิจัยและผู้เชี่ยวชาญด้าน SROI กรุณาอ่านเอกสารโครงการที่แนบมา และสกัดข้อมูลออกมาในรูปแบบ JSON เท่านั้น โครงสร้างตามนี้:
     {
@@ -61,19 +61,27 @@ if st.button("เริ่มประมวลผลโครงการ") and
         
         try:
             # ---------------------------------------------------------
-            # ส่วนที่เพิ่มเข้ามาใหม่: อ่านข้อความจาก PDF ด้วย pypdf
+            # อ่านข้อความจาก PDF โดยจำกัดจำนวนหน้าเพื่อป้องกัน Token เกิน
             # ---------------------------------------------------------
             pdf_reader = pypdf.PdfReader(file)
             extracted_text = ""
-            for page in pdf_reader.pages:
+            
+            # ตั้งค่าให้อ่านแค่ 15 หน้าแรก 
+            MAX_PAGES = 15 
+            
+            for page_num, page in enumerate(pdf_reader.pages):
+                if page_num >= MAX_PAGES:
+                    break 
+                
                 text = page.extract_text()
                 if text:
                     extracted_text += text + "\n"
+            # ---------------------------------------------------------
             
-            # นำข้อความที่สกัดได้ มาต่อท้าย Prompt ของเรา
-            full_prompt = f"{base_prompt}\n\nเนื้อหาเอกสารโครงการวิจัย:\n{extracted_text}"
+            # นำข้อความที่สกัดได้ มาต่อท้าย Prompt
+            full_prompt = f"{base_prompt}\n\nเนื้อหาเอกสารโครงการวิจัย (แสดงเพียง {MAX_PAGES} หน้าแรก):\n{extracted_text}"
 
-            # ส่งให้ Gemini 2.0 Flash (ส่งเป็น Text ปกติ ไม่ได้ส่งไฟล์)
+            # ส่งให้ Gemini 2.0 Flash
             response = client.models.generate_content(
                 model='gemini-2.0-flash',
                 contents=full_prompt,
@@ -84,7 +92,6 @@ if st.button("เริ่มประมวลผลโครงการ") and
             )
             
             data = json.loads(response.text)
-            # ---------------------------------------------------------
             
             # คำนวณ SROI
             investment = float(data.get("total_investment", 0))
@@ -108,10 +115,10 @@ if st.button("เริ่มประมวลผลโครงการ") and
             
         progress_bar.progress((i + 1) / len(uploaded_files))
         
-        # หน่วงเวลา 20 วินาทีเพื่อป้องกัน API Limit (เว้นไฟล์สุดท้ายไม่ต้องหน่วง)
+        # หน่วงเวลา 60 วินาทีเพื่อเคลียร์โควตา API รายนาที (เว้นไฟล์สุดท้ายไม่ต้องหน่วง)
         if i < len(uploaded_files) - 1:
-            status_text.text(f"พักระบบ 20 วินาทีก่อนประมวลผลไฟล์ถัดไป เพื่อป้องกันข้อจำกัด API...")
-            time.sleep(20)
+            status_text.text(f"พักระบบ 60 วินาทีก่อนประมวลผลไฟล์ถัดไป เพื่อรีเซ็ตโควตา API...")
+            time.sleep(60)
 
     status_text.text("ประมวลผลและคำนวณ SROI เสร็จสิ้น!")
 
