@@ -73,7 +73,7 @@ if st.button("เริ่มประมวลผลโครงการ") and
     try:
         combined_text = ""
         file_names = []
-        MAX_PAGES_PER_FILE = 50
+        MAX_PAGES_PER_FILE = 200
 
         for idx, file in enumerate(uploaded_files):
             file_names.append(file.name)
